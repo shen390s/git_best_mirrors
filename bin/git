@@ -122,20 +122,30 @@ check_for_best_mirror() {
     _best_time=0
 
     save_pwd
+
+    echo check mirrors: "$_mirrors" to find best mirror for site $_site
     
+    cd $_dir
     for _m in $_mirrors; do
-	cd $_dir
+	echo
+	echo trying mirror: $_m
 	_time=`time_it $_real_git clone https://$_m/$_repos`
 	if [ $? -eq 0 ]; then
+	    echo try mirror: $_m access time $_time seconds
 	    if [ ! -z "$_best" -a $_best_time -lt $_time ];then
 		:
 	    else
 		_best="$_m"
 		_best_time="$_time"
 	    fi
+	else
+	    echo try mirror: $_m failed
 	fi
 	rm -Rf $_dir/* 
     done
+
+    echo
+    echo best mirror: $_best access time: $_best_time
     
     restore_pwd
     
@@ -215,7 +225,7 @@ run_git() {
 	_cmd="$_cmd `eval $_v`"
     done
     
-    eval "$_cmd"
+    eval "exec $_cmd"
 }
 
 if [ -z "$BEST_MIRROR_GITHUB" ]; then
