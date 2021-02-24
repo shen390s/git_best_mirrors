@@ -1,0 +1,225 @@
+#! /bin/sh
+# -*- mode:shell-script
+
+# set -x
+
+MY_NAME=`realpath "$0"`
+MY_DIR=`dirname "$MY_NAME"`
+GIT_BEST_MIRRORS=$HOME/.git_best_mirrors
+
+# BEST_MIRROR_GITHUB=hub.fastgit.org
+GITHUB_MIRRORS="hub.fastgit.org github.com.cnpmjs.org github.com"
+GITHUB_CHECK_REPO="shen390s/git_best_mirrors.git"
+
+if [ -f $GIT_BEST_MIRRORS ]; then
+    source $GIT_BEST_MIRRORS
+fi
+
+check_git() {
+    local _git _f
+
+    _git="$1"
+
+    [ ! -x "$_git" ] && \
+	return 1
+    
+    _f=`realpath "$_git"`
+
+    [ "X$_f" = "X$MY_NAME" ] && \
+	return 1
+
+    [ -x "$_f" ] && \
+	return
+
+    false
+}
+
+find_real_git() {
+    local _d _dirs
+
+    _dirs="$PATH"
+
+    while [ ! -z "$_dirs" ]; do
+	_d=`echo "$_dirs" | awk -F: '{print $1}'`
+
+	if check_git "$_d/git"; then
+	    echo "$_d/git"
+	    return
+	fi
+
+	if [ "X$_d" = "X$_dirs" ]; then
+	    break
+	fi
+
+	_dirs=`echo "$_dirs" |sed -e 's/^[^:]*://'`
+    done
+
+    echo
+}
+
+time_it() {
+    local _b _a _s
+
+    _b=`date "+%s"`
+    if eval "$@"; then
+	_a=`date "+%s"`
+	echo `expr $_a - $_b`
+	true
+    else
+	_a=`date "+%s"`
+	echo `expr $_a - $_b`
+	false
+    fi
+}
+
+upcase() {
+    tr [:lower:] [:upper:]
+}
+
+save_pwd() {
+    _PWD=`pwd`
+}
+
+restore_pwd() {
+    [ ! -z "$_PWD" ] && \
+	cd "$_PWD"
+}
+
+save_best_mirror() {
+    local _site _best _key
+
+    _site=`echo "$1" | upcase`
+    _best="$2"
+    _key=`printf 'BEST_MIRROR_%s' "$_site"`
+
+    touch $GIT_BEST_MIRRORS
+    
+    if cat $GIT_BEST_MIRRORS | grep "$_key=" 2>&1 >/dev/null; then
+	mv $GIT_BEST_MIRRORS $GIT_BEST_MIRRORS.tmp
+	cat $GIT_BEST_MIRRORS.tmp | \
+	    grep -v "$_key=" >$GIT_BEST_MIRRORS
+	rm -Rf $GIT_BEST_MIRRORS.tmp
+    fi
+
+    echo "$_key=$_best" >>$GIT_BEST_MIRRORS 
+}
+
+check_for_best_mirror() {
+    local _mirrors _repos _site _v _m _dir _best _best_time _time _real_git 
+    
+    _real_git=`find_real_git`
+
+    _site=`echo "$1" | upcase`
+    _v=`printf '$%s_MIRRORS' "$_site"`
+    _v="echo $_v"
+    _mirrors=`eval "$_v"`
+    _v=`printf '$%s_CHECK_REPO' "$_site"`
+    _v="echo $_v"
+    _repos=`eval "$_v"`
+
+    _dir=`mktemp -d /tmp/check_git.XXXXX`
+    _best=
+    _best_time=0
+
+    save_pwd
+    
+    for _m in $_mirrors; do
+	cd $_dir
+	_time=`time_it $_real_git clone https://$_m/$_repos`
+	if [ $? -eq 0 ]; then
+	    if [ ! -z "$_best" -a $_best_time -lt $_time ];then
+		:
+	    else
+		_best="$_m"
+		_best_time="$_time"
+	    fi
+	fi
+	rm -Rf $_dir/* 
+    done
+    
+    restore_pwd
+    
+    rm -Rf $_dir
+    save_best_mirror "$_site" "$_best"
+    
+    _v=`printf 'BEST_MIRROR_%s=%s' "$_site" "$_best"`
+    eval "$_v"
+}
+
+get_best_mirror() {
+    local _host
+
+    _host="$1"
+    case "$_host" in
+	*github.com)
+	    if [ -z "$BEST_MIRROR_GITHUB" ]; then
+		echo $_host
+	    else
+		echo $BEST_MIRROR_GITHUB
+	    fi
+	    ;;
+	*)
+	    echo "$_host"
+    esac
+}
+
+get_host_in_url() {
+    local _url _host
+
+    _url="$1"
+    _host=`echo "$_url" |sed -e 's/^.*\/\/\([^\/]*\).*$/\1/'`
+    echo "$_host"
+}
+
+replace_host_fmt() {
+    local _url
+    _url="$1"
+
+    echo "$_url" |sed -e 's/:\/\/[^\/]*/:\/\/%s/'
+}
+
+rewrite_url_use_best_mirror() {
+    local _url _host _fmt
+
+    _url="$1"
+
+    case "$_url" in
+	https://* | http://*)
+	    _host=`get_host_in_url "$_url"`
+	    _fmt=`replace_host_fmt "$_url"`
+	    printf "$_fmt" `get_best_mirror "$_host"`
+	    ;;
+	*)
+	    echo "$_url"
+	    ;;
+    esac
+}
+
+run_git() {
+    local _real_git _nargs _cmd _c _s _v
+
+    _nargs=$#
+    _real_git=`find_real_git`
+    if [ -z "$_real_git" ]; then
+	echo no git command found in PATH
+	return 255
+    fi
+
+    _cmd="$_real_git"
+    _c=0
+
+    while [ $_c -lt $_nargs ]; do
+	_c=`expr $_c + 1`
+	_s=`printf '$%d' $_c`
+	_v="rewrite_url_use_best_mirror $_s"
+	_cmd="$_cmd `eval $_v`"
+    done
+    
+    eval "$_cmd"
+}
+
+if [ -z "$BEST_MIRROR_GITHUB" ]; then
+    check_for_best_mirror "github"
+fi
+
+run_git "$@"
