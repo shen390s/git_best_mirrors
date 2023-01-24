@@ -3,17 +3,43 @@
 
 # set -x
 
-MY_NAME=`realpath "$0"`
-MY_DIR=`dirname "$MY_NAME"`
+# MY_NAME=`realpath "$0"`
+# MY_DIR=`dirname "$MY_NAME"`
 GIT_BEST_MIRRORS=$HOME/.git_best_mirrors
 
 # BEST_MIRROR_GITHUB=hub.fastgit.org
-GITHUB_MIRRORS="hub.fastgit.org github.com.cnpmjs.org github.com"
+GITHUB_MIRRORS="ghproxy.com gitclone.com github.com"
 GITHUB_CHECK_REPO="shen390s/git_best_mirrors.git"
 
 if [ -f $GIT_BEST_MIRRORS ]; then
     source $GIT_BEST_MIRRORS
 fi
+
+find_real_path() {
+    local _real_path
+
+    _real_path=$(which realpath)
+    if [ ! -z "$_real_path" ]; then
+        echo $_real_path
+    else
+        _real_path=$(which grealpath)
+        echo $_real_path
+    fi    
+}
+
+exec_cmd() {
+    local _cmd
+
+    _cmd="$1"
+
+    echo "PWD: $(pwd)" >>/tmp/git.best.log
+    echo "$(date) $_cmd" >>/tmp/git.best.log
+    (eval "$_cmd" 2>&1) >>/tmp/git.best.log 
+}
+
+REAL_PATH=$(find_real_path)
+MY_NAME=$(eval "$REAL_PATH $0")
+MY_DIR=`dirname "$MY_NAME"`
 
 check_git() {
     local _git _f
@@ -21,15 +47,15 @@ check_git() {
     _git="$1"
 
     [ ! -x "$_git" ] && \
-	return 1
+	    return 1
     
-    _f=`realpath "$_git"`
+    _f=$($REAL_PATH "$_git")
 
     [ "X$_f" = "X$MY_NAME" ] && \
-	return 1
+	    return 1
 
     [ -x "$_f" ] && \
-	return
+	    return
 
     false
 }
@@ -39,19 +65,24 @@ find_real_git() {
 
     _dirs="$PATH"
 
+    if [ ! -z "$REAL_GIT" ]; then
+        echo "$REAL_GIT"
+    fi
+    
     while [ ! -z "$_dirs" ]; do
-	_d=`echo "$_dirs" | awk -F: '{print $1}'`
+	    _d=`echo "$_dirs" | awk -F: '{print $1}'`
 
-	if check_git "$_d/git"; then
-	    echo "$_d/git"
-	    return
-	fi
+	    if check_git "$_d/git"; then
+	        echo "$_d/git"
+                export REAL_GIT="$_d/git"
+	        return
+	    fi
 
-	if [ "X$_d" = "X$_dirs" ]; then
-	    break
-	fi
+	    if [ "X$_d" = "X$_dirs" ]; then
+	        break
+	    fi
 
-	_dirs=`echo "$_dirs" |sed -e 's/^[^:]*://'`
+	    _dirs=`echo "$_dirs" |sed -e 's/^[^:]*://'`
     done
 
     echo
@@ -85,6 +116,64 @@ restore_pwd() {
 	cd "$_PWD"
 }
 
+git_protocol() {
+    local _url _proto
+
+    _url="$1"
+    _proto=$(echo "$_url" |awk -F: '{print $1}')
+    case "$_proto" in
+        http*)
+            echo $_proto
+            ;;
+        git@*)
+            echo git
+            ;;
+        *)
+            echo unknown
+            ;; 
+    esac
+}
+
+git_host() {
+    local _url _proto _host 
+
+    _url="$1"
+    _proto=$(git_protocol "$_url")
+
+    case "$_proto" in
+       http*)
+            _host=$(echo "$_url" |awk -F// '{print $2}' |awk -F/ '{print $1}')
+            ;;
+        git)
+            _host=$(echo "$_url" |awk -F@ '{print $2}' |awk -F: '{print $1}')
+            ;;
+        *)
+            _host=''
+            ;;
+    esac
+    echo "$_host"
+}
+
+git_repo() {
+    local _url _proto _repo
+
+    _url="$1"
+    _proto=$(git_protocol "$_url")
+
+    case "$_proto" in
+        http*)
+            _repo=$(echo "$_url"|awk -F// '{print $2}' |sed -e 's/^[^\/]*\///g')
+            ;;
+        git)
+            _repo=$(echo "$_url" |awk -F@ '{print $2}' |awk -F: '{print $2}')
+            ;;
+        *)
+            _repo=''
+            ;;   
+    esac
+    echo "$_repo"
+}
+
 save_best_mirror() {
     local _site _best _key
 
@@ -102,6 +191,27 @@ save_best_mirror() {
     fi
 
     echo "$_key=$_best" >>$GIT_BEST_MIRRORS 
+}
+
+mk_mirror_url() {
+    local _m _repo _url
+
+    _m="$1"
+    _repo="$2"
+
+    case "$_m" in
+        gitclone.com)
+           _url=$(printf 'https://gitclone.com/github.com/%s' $_repo)
+           ;;
+        ghproxy.com)
+           _url=$(printf 'https://ghproxy.com/https://github.com/%s' $_repo)
+           ;;
+        *)
+           _url=$(printf 'https://%s/%s' "$_m" "$_repo")
+           ;;
+    esac
+
+    echo "$_url"
 }
 
 check_for_best_mirror() {
@@ -129,7 +239,7 @@ check_for_best_mirror() {
     for _m in $_mirrors; do
 	echo
 	echo trying mirror: $_m
-	_time=`time_it $_real_git clone https://$_m/$_repos`
+	_time=$(time_it $_real_git clone $(mk_mirror_url "$_m" "$_repos"))
 	if [ $? -eq 0 ]; then
 	    echo try mirror: $_m access time $_time seconds
 	    if [ ! -z "$_best" -a $_best_time -lt $_time ];then
@@ -161,75 +271,174 @@ get_best_mirror() {
 
     _host="$1"
     case "$_host" in
-	*github.com)
-	    if [ -z "$BEST_MIRROR_GITHUB" ]; then
-		echo $_host
-	    else
-		echo $BEST_MIRROR_GITHUB
-	    fi
-	    ;;
-	*)
-	    echo "$_host"
+	    *github.com)
+	        if [ -z "$BEST_MIRROR_GITHUB" ]; then
+		        echo $_host
+	        else    
+		        echo $BEST_MIRROR_GITHUB
+	        fi
+	        ;;
+	    *)
+	        echo "$_host"
+            ;;
     esac
 }
 
-get_host_in_url() {
-    local _url _host
+get_mirror_url() {
+    local _url _proto _host _repo 
 
     _url="$1"
-    _host=`echo "$_url" |sed -e 's/^.*\/\/\([^\/]*\).*$/\1/'`
-    echo "$_host"
-}
+    _proto=$(git_protocol "$_url")
+    _host=$(git_host "$_url")
+    _repo=$(git_repo "$_url")
 
-replace_host_fmt() {
-    local _url
-    _url="$1"
-
-    echo "$_url" |sed -e 's/:\/\/[^\/]*/:\/\/%s/'
-}
-
-rewrite_url_use_best_mirror() {
-    local _url _host _fmt
-
-    _url="$1"
-
-    case "$_url" in
-	https://* | http://*)
-	    _host=`get_host_in_url "$_url"`
-	    _fmt=`replace_host_fmt "$_url"`
-	    printf "$_fmt" `get_best_mirror "$_host"`
-	    ;;
-	*)
-	    echo "$_url"
-	    ;;
-    esac
-}
-
-run_git() {
-    local _real_git _nargs _cmd _c _s _v
-
-    _nargs=$#
-    _real_git=`find_real_git`
-    if [ -z "$_real_git" ]; then
-	echo no git command found in PATH
-	return 255
+    _m=$(get_best_mirror "$_host")
+    
+    if [ "x$_m" = "x$_host" ]; then
+        echo "$_url"
+        return 
     fi
 
-    _cmd="$_real_git"
-    _c=0
+    mk_mirror_url "$_m" "$_repo"  
+}
 
-    while [ $_c -lt $_nargs ]; do
-	_c=`expr $_c + 1`
-	_s=`printf '$%d' $_c`
-	_v="rewrite_url_use_best_mirror $_s"
-	_cmd="$_cmd `eval $_v`"
+git_command() {
+    local _c 
+
+    while [ $# -gt 0 ]; do
+        _c="$1"
+
+        case "$_c" in
+            -C|-c|--origin)
+                shift 2
+                ;;
+            -*)
+                shift
+                ;;
+            *)
+                echo $_c
+                return  
+                ;;
+        esac
     done
+
+    echo 
+}
+
+run_git_clone() {
+    local _c _url _dir _rg 
+
+    _rg="$(find_real_git) "
+    _c="$_rg "
+    _url=""
+    while [ $# -gt 0 ]; do 
+        case "$1" in
+            -C|-c|--origin)
+                _c="$_c $1 $2"
+                shift 2
+                ;;
+            -*)
+                _c="$_c $1"
+                shift 
+                ;;
+            clone)
+                _c="$_c clone"
+                shift 
+                ;;
+            *)
+                if [ -z "$_url" ]; then
+                    _url="$1"
+                    _c="$_c $(get_mirror_url $_url)"
+                else
+                    _dir="$1"
+                    _c="$_c $_dir"
+                fi
+                shift
+                ;;
+        esac
+    done 
+
+    if [ ! -z "$_c" ]; then
+        if [ ! -z "$_dir" ]; then
+            :
+        else 
+            _dir=$(echo $_url |awk -F/ '{print $NF}' | sed -e 's/\.git//g')
+        fi 
+        exec_cmd "$_c"
+
+        if [ "x$?" = "x0" ]; then
+            cd $_dir && exec_cmd "$_rg config --replace-all remote.origin.url $_url"
+        else
+            rm -Rf $_dir
+        fi
+    fi  
+}
+
+with_best_mirror() {
+    local _url _url_best _rg _status _cnt
+
+    _rg=$(find_real_git)
+    _url=$($_rg config --get remote.origin.url)
+
+    if [ -z "$_url" ]; then
+        $_rg "$@"
+        return
+    fi
+
+    _url_best=$(get_mirror_url $_url)
+    if [ -z "$_url_best" -o "x$_url" = "x$_url_best" ]; then
+        $_rg "$@"
+        return
+    fi
+
+    exec_cmd "$_rg config --replace-all remote.origin.url $_url_best"
     
-    eval "exec $_cmd"
+    _cnt=10
+
+    echo $_rg "$@" >>/tmp/git.best.log
+    
+    while [ $_cnt -gt 0 ]; do
+        $_rg "$@"
+        _status=$?
+        echo "status: $_status" >>/tmp/git.best.log
+        if [ "x$_status" = "x0" ]; then
+            break
+        fi
+
+        _cnt=$(expr $_cnt - 1)
+        sleep 5
+    done
+    exec_cmd "$_rg config --replace-all remote.origin.url $_url"
+
+    return $_status
 }
 
 if [ -z "$BEST_MIRROR_GITHUB" ]; then
     check_for_best_mirror "github"
 fi
 
-run_git "$@"
+echo "$(date) command: git $@" >>/tmp/git.best.log
+
+_c=$(git_command "$@")
+case "$_c" in
+    clone)
+        _cnt=0  
+        while [ $_cnt -lt 10 ]; do
+            if run_git_clone "$@"; then
+                exit $?
+            fi
+            sleep 10
+            _cnt=$(expr $_cnt + 1)
+        done
+        exit 1
+        ;;
+    config|rev-parse|reset|init)
+        _rg=$(find_real_git)
+        echo "$_rg $@" >>/tmp/git.best.log
+        $_rg "$@" 
+        exit $?
+        ;;
+    *)
+        with_best_mirror "$@"
+        ;;
+esac
