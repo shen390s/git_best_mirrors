@@ -1,11 +1,14 @@
 #! /bin/sh
 # -*- mode:shell-script
 
-# set -x
+if [ "x$DEBUG" = "xyes" ]; then
+    set -x
+fi
 
 # MY_NAME=`realpath "$0"`
 # MY_DIR=`dirname "$MY_NAME"`
 GIT_BEST_MIRRORS=$HOME/.git_best_mirrors
+GIT_BEST_LOG=/tmp/git.best.log
 
 # BEST_MIRROR_GITHUB=hub.fastgit.org
 GITHUB_MIRRORS="ghproxy.com gitclone.com github.com"
@@ -18,13 +21,22 @@ fi
 find_real_path() {
     local _real_path
 
+    if [ ! -z "$REAL_PATH" ]; then
+        echo $REAL_PATH
+        return
+    fi
+
     _real_path=$(which realpath)
     if [ ! -z "$_real_path" ]; then
-        echo $_real_path
+        :
     else
         _real_path=$(which grealpath)
-        echo $_real_path
-    fi    
+    fi
+
+    if [ ! -z "$_real_path"  ]; then
+        export REAL_PATH="$_real_path"
+        echo $REAL_PATH
+    fi
 }
 
 exec_cmd() {
@@ -32,9 +44,9 @@ exec_cmd() {
 
     _cmd="$1"
 
-    echo "PWD: $(pwd)" >>/tmp/git.best.log
-    echo "$(date) $_cmd" >>/tmp/git.best.log
-    (eval "$_cmd" 2>&1) >>/tmp/git.best.log 
+    echo "PWD: $(pwd)" >>$GIT_BEST_LOG
+    echo "$(date) $_cmd" >>$GIT_BEST_LOG
+    eval "$_cmd" 
 }
 
 REAL_PATH=$(find_real_path)
@@ -303,8 +315,10 @@ get_mirror_url() {
 }
 
 git_command() {
-    local _c 
+    local _c _cmd
 
+    echo git_command: "$@" >>$GIT_BEST_LOG
+    _cmd=""
     while [ $# -gt 0 ]; do
         _c="$1"
 
@@ -315,14 +329,23 @@ git_command() {
             -*)
                 shift
                 ;;
+            clone)
+                echo clone
+                return
+                ;;
             *)
-                echo $_c
-                return  
+                if [ ! -z "$_cmd" ]; then
+                    _cmd="$_cmd-$_c"
+                else
+                    _cmd="$_c"
+                fi
+                shift
                 ;;
         esac
     done
 
-    echo 
+    echo git_command: $_cmd >>$GIT_BEST_LOG
+    echo  "$_cmd"
 }
 
 run_git_clone() {
@@ -331,6 +354,8 @@ run_git_clone() {
     _rg="$(find_real_git) "
     _c="$_rg "
     _url=""
+    echo run_git_clone: $_rg "$@" >>$GIT_BEST_LOG
+
     while [ $# -gt 0 ]; do 
         case "$1" in
             -C|-c|--origin)
@@ -374,10 +399,39 @@ run_git_clone() {
     fi  
 }
 
-with_best_mirror() {
-    local _url _url_best _rg _status _cnt
+run_git_ls_remote() {
+    local _c _url _rg
 
     _rg=$(find_real_git)
+    _c="$_rg"
+    _url=""
+
+    echo run_git_ls_remote: $_rg "$@" >>$GIT_BEST_LOG
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            https*)
+                _url=$(get_mirror_url $1)
+                _c="$_c $_url"
+                shift
+                ;;
+            *)
+                _c="$_c $1"
+                shift
+                ;;
+        esac
+    done
+
+    eval "$_c"
+}
+
+with_best_mirror() {
+    local _url _url_best _rg _status
+
+    _rg=$(find_real_git)
+
+    echo with_best_mirror: $_rg "$@" >>$GIT_BEST_LOG
+
     _url=$($_rg config --get remote.origin.url)
 
     if [ -z "$_url" ]; then
@@ -392,22 +446,12 @@ with_best_mirror() {
     fi
 
     exec_cmd "$_rg config --replace-all remote.origin.url $_url_best"
+    echo with_best_mirror: $_rg "$@" >>$GIT_BEST_LOG
     
-    _cnt=10
+    $_rg "$@"
+    _status=$?
+    echo "status: $_status" >>$GIT_BEST_LOG
 
-    echo $_rg "$@" >>/tmp/git.best.log
-    
-    while [ $_cnt -gt 0 ]; do
-        $_rg "$@"
-        _status=$?
-        echo "status: $_status" >>/tmp/git.best.log
-        if [ "x$_status" = "x0" ]; then
-            break
-        fi
-
-        _cnt=$(expr $_cnt - 1)
-        sleep 5
-    done
     exec_cmd "$_rg config --replace-all remote.origin.url $_url"
 
     return $_status
@@ -417,7 +461,7 @@ if [ -z "$BEST_MIRROR_GITHUB" ]; then
     check_for_best_mirror "github"
 fi
 
-echo "$(date) command: git $@" >>/tmp/git.best.log
+echo "$(date) command: git $@" >>$GIT_BEST_LOG
 
 _c=$(git_command "$@")
 case "$_c" in
@@ -432,9 +476,12 @@ case "$_c" in
         done
         exit 1
         ;;
-    config|rev-parse|reset|init)
+    ls-remote-*)
+        run_git_ls_remote "$@"
+        ;;
+    config*|reset*|init*|push*)
         _rg=$(find_real_git)
-        echo "$_rg $@" >>/tmp/git.best.log
+        echo direct git: $_rg "$@" >>$GIT_BEST_LOG
         $_rg "$@" 
         exit $?
         ;;
